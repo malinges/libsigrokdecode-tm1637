@@ -61,6 +61,12 @@ class AddressBits:
     (MIN, MAX) = (0, 2)
 
 
+class Params:
+    """Specific parameters."""
+
+    (UNKNOWN_CHAR,) = ("?",)
+
+
 ###############################################################################
 # Enumeration classes for annotations
 ###############################################################################
@@ -68,14 +74,14 @@ class AnnBits:
     """Enumeration of annotations for bits."""
 
     (
-        RESERVED, BLANK,
+        RESERVED,
         WRITE, READ,                # Data write, key scan read
         DATA, DISPLAY, ADDRESS,     # Commands
         AUTO, FIXED,                # Addressing
         NORMAL, TEST,               # Mode
         DIGIT,                      # Digit value
         CONTRAST, OFF, ON,          # Display control
-    ) = range(15)
+    ) = range(14)
 
 
 class AnnInfo:
@@ -141,7 +147,6 @@ fonts = {
 ###############################################################################
 bits = {
     AnnBits.RESERVED: ["Reserved", "Rsvd", "R"],
-    AnnBits.BLANK: ["Blank", "B"],
     AnnBits.WRITE: ["Write", "Wrt", "W"],
     AnnBits.READ: ["Read", "Rd", "R"],
     AnnBits.DATA: ["Data command", "Data Cmd", "Data", "D"],
@@ -160,7 +165,7 @@ bits = {
 
 info = {
     AnnInfo.WARN: ["Warnings", "Warn", "W"],
-    AnnInfo.DISPLAY: ["Display", "Dsp", "D"],
+    AnnInfo.DISPLAY: ["Tubes", "T"],
 }
 
 
@@ -173,9 +178,9 @@ class Decoder(srd.Decoder):
     api_version = 3
     id = "tm1637"
     name = "TM1637"
-    longname = "7-segments LED drive control chip"
+    longname = "LED drive control special circuit"
     desc = "Titan Micro Electronics LED drive control special circuit for \
-        driving displays with 7-segments LED digits, v 1.0.0."
+        driving displays with 7-segments digital tubes."
     license = "gplv2+"
     inputs = ["tmc"]
     outputs = ["tm1637"]
@@ -192,7 +197,7 @@ class Decoder(srd.Decoder):
         }
     )
     annotation_rows = (
-        ("bits", "CmdBits/Segments", tuple(
+        ("bits", "Bits", tuple(
             range(AnnBits.RESERVED, AnnBits.ON + 1)
         )),
         ("display", "Display", (AnnInfo.DISPLAY,)),
@@ -214,7 +219,11 @@ class Decoder(srd.Decoder):
         self.state = "IDLE"
         # Specific parameters for a device
         self.auto = None    # Flag about current addressing
-        self.digit = 0      # Processed digit
+        self.position = 0   # Processed address position
+        self.clear_data()
+
+    def clear_data(self):
+        """Clear data cache."""
         self.display = []   # Buffer for displayed chars
 
     def start(self):
@@ -279,7 +288,7 @@ class Decoder(srd.Decoder):
         self.write = (ann == AnnBits.WRITE)
         annots = hlp.compose_annot(bits[ann])
         self.put_data(DataBits.RW, DataBits.RW, [ann, annots])
-        # Bits row - Prohibeted bit
+        # Bits row - Prohibited bit
         for i in range(DataBits.RW):
             self.put_bit_reserve(i)
 
@@ -311,7 +320,7 @@ class Decoder(srd.Decoder):
         for i in range(AddressBits.MIN, AddressBits.MAX + 1):
             mask |= 1 << i
         adr = (data & mask) + 1
-        self.digit = adr    # Start address for digit processing
+        self.position = adr    # Start address for digit processing
         ann = AnnBits.DIGIT
         annots = hlp.compose_annot(bits[ann], ann_value=adr)
         self.put_data(AddressBits.MIN, AddressBits.MAX, [ann, annots])
@@ -325,7 +334,7 @@ class Decoder(srd.Decoder):
                 self.put_data(i, i, [AnnBits.DIGIT, annots])
         # Register digit
         mask = data & ~(1 << 7)
-        char = "?"
+        char = Params.UNKNOWN_CHAR
         dp = ""
         if mask in fonts:
             char = fonts[mask]
@@ -333,26 +342,22 @@ class Decoder(srd.Decoder):
                 dp = self.decimal_point()
         self.display.append(char + dp)
         if self.auto:
-            self.digit += 1     # Automatic address adding
+            self.position += 1     # Automatic address adding
 
-    def handle_display(self):
+    def handle_info(self):
         """Process display."""
-        if len(self.display) == 0:
-            return
         # Display row
-        ann = AnnInfo.DISPLAY
-        val = "'{}'".format("".join(self.display))
-        annots = hlp.compose_annot(info[ann], ann_value=val)
-        self.put(self.ssb, self.es, self.out_ann, [ann, annots])
-        # Clear data
-        self.digit = 0
-        self.display = []
+        if len(self.display) > 0:
+            ann = AnnInfo.DISPLAY
+            val = "{}".format("".join(self.display))
+            annots = hlp.compose_annot(info[ann], ann_value=val)
+            self.put(self.ssb, self.es, self.out_ann, [ann, annots])
+        self.clear_data()
 
     def decode(self, ss, es, data):
         """Decode samples provided by parent decoder."""
         cmd, databyte = data
         self.ss, self.es = ss, es
-        # print(self.state, cmd, data)
 
         if cmd == "BITS":
             """Collect packet of bits that belongs to the following command.
@@ -389,5 +394,5 @@ class Decoder(srd.Decoder):
             if cmd == "DATA":
                 self.handle_data(databyte)
             elif cmd == "STOP":
-                self.handle_display()
+                self.handle_info()
                 self.state = "IDLE"
