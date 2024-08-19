@@ -19,7 +19,6 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 """
 
 import sigrokdecode as srd
-import common.srdhelper as hlp
 
 
 ###############################################################################
@@ -170,6 +169,136 @@ info = {
 
 
 ###############################################################################
+# Helpers
+###############################################################################
+def create_annots(annots_dict):
+    """Create a tuple with all annotation definitions dictionary.
+
+    Arguments
+    ---------
+    annots_dict : dictionary
+        Dictionary of annotation definitions in the scheme {prefix: def_dict},
+        where:
+        prefix : string
+            Key of the annotation dictionary as a prefix of the annotation
+            name in the Decoder class. It is going to be appended with numeric
+            key from the value of the annotation dictionary.
+        def_dict : dictionary
+            Value of the annotation dictioniary, which is again a dictionary
+            defining particular set of annotations.
+            - The key of the dictionary is the index of the definition, which
+              is an attribute of corresponding annotation class defined in the
+              Decoder module outside the Decoder class.
+            - The vallue of the dictionary is the list of annotation strings,
+              usually from the longest to the shortest.
+
+    Returns
+    -------
+    tuple of str
+        Annotations definitions compliant with Protocol Decoder API.
+
+    """
+    annots = []
+    for prefix, ann_def in annots_dict.items():
+        for ann_idx, ann_list in ann_def.items():
+            annots.insert(ann_idx, tuple([prefix + "-" + ann_list[0].lower(),
+                                         ann_list[0]]))
+    return tuple(annots)
+
+
+def compose_annot(ann_label="", ann_value=None, ann_unit=None,
+                  ann_action=None):
+    """Compose list of annotations enriched with value and unit.
+
+    Arguments
+    ---------
+    ann_label : list
+        List of annotation labels for enriching with values and units and
+        prefixed with actions.
+        If label is none or empty string, there is used neither it nor its
+        delimiter, just other arguments, if any.
+    ann_value : list
+        List of values to be added item by item to all annotations.
+    ann_unit : list
+        List of measurement units to be added item by item to all
+        annotations. The method does not add separation space between
+        the value and the unit.
+    ann_action : list
+        List of action prefixes prepend item by item to all annotations.
+        The method separates action and annotation with a space.
+
+    Returns
+    -------
+    list of str
+        List of a annotations potentially enriched with values and units
+        with items sorted by length descending.
+
+    Notes
+    -----
+    - Usually just one value and one unit is used. However for flexibility
+      more of them can be used.
+    - If the annotation values list is not defined, the annotation units
+      list is not used, even if it is defined.
+
+    """
+    if ann_label is None:
+        ann_label = ""
+    if not isinstance(ann_label, list):
+        tmp = ann_label
+        ann_label = []
+        ann_label.append(tmp)
+
+    if ann_value is None:
+        ann_value = []
+    elif not isinstance(ann_value, list):
+        tmp = ann_value
+        ann_value = []
+        ann_value.append(tmp)
+
+    if ann_unit is None:
+        ann_unit = []
+    elif not isinstance(ann_unit, list):
+        tmp = ann_unit
+        ann_unit = []
+        ann_unit.append(tmp)
+
+    if ann_action is None:
+        ann_action = []
+    elif not isinstance(ann_action, list):
+        tmp = ann_action
+        ann_action = []
+        ann_action.append(tmp)
+    if len(ann_action) == 0:
+        ann_action = [""]
+
+    # Compose annotation
+    annots = []
+    for act in ann_action:
+        for lbl in ann_label:
+            ann = "{} {}".format(act, lbl).strip()
+            ann_item = None
+            for val in ann_value:
+                if len(ann) > 0:
+                    ann_item = "{}: {}".format(ann, val)
+                else:
+                    ann_item = "{}".format(val)
+                annots.append(ann_item)  # Without units
+                for unit in ann_unit:
+                    ann_item += "{}".format(unit)
+                    annots.append(ann_item)  # With units
+            if ann_item is None:
+                annots.append(ann)
+
+    # Add last 2 annotation items without values
+    if len(ann_value) > 0:
+        for ann in ann_label[-2:]:
+            if len(ann) > 0:
+                annots.append(ann)
+    annots.sort(key=len, reverse=True)
+    return annots
+
+
+###############################################################################
 # Decoder
 ###############################################################################
 class Decoder(srd.Decoder):
@@ -190,7 +319,7 @@ class Decoder(srd.Decoder):
          "values": ("Dot", "Colon")},
     )
 
-    annotations = hlp.create_annots(
+    annotations = create_annots(
         {
             "bit": bits,
             "info": info,
@@ -244,7 +373,7 @@ class Decoder(srd.Decoder):
         - Parameters should be considered as a range, so that the end bit
           number is not annotated.
         """
-        annots = hlp.compose_annot(bits[AnnBits.RESERVED])
+        annots = compose_annot(bits[AnnBits.RESERVED])
         for bit in range(start, end or (start + 1)):
             self.put(self.bits[bit][1], self.bits[bit][2],
                      self.out_ann, [AnnBits.RESERVED, annots])
@@ -263,7 +392,7 @@ class Decoder(srd.Decoder):
             if not attr.startswith("__") and value == cmd:
                 # Bits row - Command bits
                 ann = cmd_annot[cmd]
-                annots = hlp.compose_annot(bits[ann])
+                annots = compose_annot(bits[ann])
                 self.putd(CommandBits.MIN, CommandBits.MAX, [ann, annots])
                 # Handler
                 fn = getattr(self, "handle_command_{}".format(attr.lower()))
@@ -275,17 +404,17 @@ class Decoder(srd.Decoder):
         self.putr(DataBits.MODE + 1, CommandBits.MIN)
         # Bits row - Mode bit
         ann = (AnnBits.NORMAL, AnnBits.TEST)[data >> DataBits.MODE & 1]
-        annots = hlp.compose_annot(bits[ann])
+        annots = compose_annot(bits[ann])
         self.putd(DataBits.MODE, DataBits.MODE, [ann, annots])
         # Bits row - Addressing bit
         ann = (AnnBits.AUTO, AnnBits.FIXED)[data >> DataBits.ADDR & 1]
         self.auto = (ann == AnnBits.AUTO)
-        annots = hlp.compose_annot(bits[ann])
+        annots = compose_annot(bits[ann])
         self.putd(DataBits.ADDR, DataBits.ADDR, [ann, annots])
         # Bits row - Read/Write bit
         ann = (AnnBits.WRITE, AnnBits.READ)[data >> DataBits.RW & 1]
         self.write = (ann == AnnBits.WRITE)
-        annots = hlp.compose_annot(bits[ann])
+        annots = compose_annot(bits[ann])
         self.putd(DataBits.RW, DataBits.RW, [ann, annots])
         # Bits row - Prohibited bit
         self.putr(0, DataBits.RW)
@@ -296,7 +425,7 @@ class Decoder(srd.Decoder):
         self.putr(DisplayBits.SWITCH + 1, CommandBits.MIN)
         # Bits row - Switch bit
         ann = (AnnBits.OFF, AnnBits.ON)[data >> DisplayBits.SWITCH & 1]
-        annots = hlp.compose_annot(bits[ann])
+        annots = compose_annot(bits[ann])
         self.putd(DisplayBits.SWITCH, DisplayBits.SWITCH, [ann, annots])
         # Bits row - PWM bits
         mask = 0
@@ -304,7 +433,7 @@ class Decoder(srd.Decoder):
             mask |= 1 << i
         pwm = contrasts[data & mask]
         ann = AnnBits.CONTRAST
-        annots = hlp.compose_annot(bits[ann], ann_value=pwm)
+        annots = compose_annot(bits[ann], ann_value=pwm)
         self.putd(DisplayBits.MIN, DisplayBits.MAX, [ann, annots])
 
     def handle_command_address(self, data):
@@ -318,7 +447,7 @@ class Decoder(srd.Decoder):
         adr = (data & mask) + 1
         self.position = adr    # Start address for digit processing
         ann = AnnBits.DIGIT
-        annots = hlp.compose_annot(bits[ann], ann_value=adr)
+        annots = compose_annot(bits[ann], ann_value=adr)
         self.putd(AddressBits.MIN, AddressBits.MAX, [ann, annots])
 
     def handle_data(self, data):
@@ -346,7 +475,7 @@ class Decoder(srd.Decoder):
         if self.display:
             ann = AnnInfo.DISPLAY
             val = "{}".format("".join(self.display))
-            annots = hlp.compose_annot(info[ann], ann_value=val)
+            annots = compose_annot(info[ann], ann_value=val)
             self.put(self.ssb, self.es, self.out_ann, [ann, annots])
         self.clear_data()
 
